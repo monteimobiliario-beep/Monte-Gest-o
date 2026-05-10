@@ -43,9 +43,15 @@ import {
   Moon
 } from 'lucide-react';
 
-// Initialize Stripe with the provided sandbox key
-const stripePromise = loadStripe('sb_publishable_Gjq7HQr64L9AIw_C2JokAA_t0y1ybyx');
-const STRIPE_REFERENCE = 'siaoxshhgtbpegkhfrnn';
+// Initialize Stripe
+const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || 'sb_publishable_TqHbTX2bKm_7VU9qs3Nk7w_-kPDEFw9';
+const stripePromise = loadStripe(STRIPE_KEY);
+const STRIPE_REFERENCE = import.meta.env.VITE_STRIPE_REFERENCE || 'qlhyqezajotzmckkyjvp';
+
+import { dataService } from './services/dataService';
+import { authService } from './services/authService';
+import { Login } from './components/Login';
+import { User as UserType } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart, 
@@ -169,7 +175,9 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [currentUser, setCurrentUser] = useState<Employee>(MOCK_EMPLOYEES[0]); // Default to Admin
+  const [sessionUser, setSessionUser] = useState<UserType | null>(authService.getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<Employee>(MOCK_EMPLOYEES[0]);
+
   const [employees, setEmployees] = useState<Employee[]>([MOCK_EMPLOYEES[0]]);
   const [finance, setFinance] = useState<FinanceRecord[]>([]);
   const [projects, setProjects] = useState<Project[]>([
@@ -185,6 +193,64 @@ export default function App() {
   const [availableRoles, setAvailableRoles] = useState<string[]>([
     'Administrador', 'Agente de Campo', 'Entrada de Dados', 'Supervisor', 'Coordenador', 'Gestor de Projeto', 'RH', 'Financeiro'
   ]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Sincronizar currentUser com a sessão ativa
+  React.useEffect(() => {
+    if (sessionUser) {
+      // Tentar encontrar o funcionário correspondente no estado, senão criar um temporário baseado na sessão
+      const found = employees.find(e => e.contact === sessionUser.email);
+      if (found) {
+        setCurrentUser(found);
+      } else {
+        setCurrentUser({
+          id: sessionUser.id,
+          name: sessionUser.name,
+          role: sessionUser.role,
+          department: 'Management',
+          joinDate: new Date().toISOString().split('T')[0],
+          contact: sessionUser.email,
+          status: 'ACTIVE'
+        });
+      }
+    }
+  }, [sessionUser, employees]);
+
+  // --- Fetch Data from Supabase ---
+  React.useEffect(() => {
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        const [empData, finData, projData, prodData, goalData, permissionsData, rolesData, deptsData] = await Promise.all([
+          dataService.getEmployees(),
+          dataService.getFinanceRecords(),
+          dataService.getProjects(),
+          dataService.getProduction(),
+          dataService.getGoals(),
+          dataService.getPermissions(),
+          dataService.getConfig('roles'),
+          dataService.getConfig('departments')
+        ]);
+        setEmployees(empData);
+        setFinance(finData);
+        setProjects(projData);
+        setProduction(prodData);
+        setGoals(goalData);
+        if (permissionsData) setRolePermissions(prev => ({ ...prev, ...permissionsData }));
+        if (rolesData) setAvailableRoles(rolesData);
+        if (deptsData) setAvailableDepartments(deptsData);
+        
+        // Update current user if found in employees
+        const foundAdmin = empData.find(e => e.role === 'ADMIN' || e.role === 'Administrador');
+        if (foundAdmin) setCurrentUser(foundAdmin);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
 
   const [editingRoleIndex, setEditingRoleIndex] = useState<number | null>(null);
   const [editingDeptIndex, setEditingDeptIndex] = useState<number | null>(null);
@@ -195,6 +261,7 @@ export default function App() {
   const [rolePermissions, setRolePermissions] = useState<Record<string, string[]>>({
     'Administrador': ['dashboard', 'finance', 'projects', 'production', 'goals', 'hr', 'reports', 'settings', 'permissions'],
     'ADMIN': ['dashboard', 'finance', 'projects', 'production', 'goals', 'hr', 'reports', 'settings', 'permissions'],
+    'Gestor': ['dashboard', 'finance', 'projects', 'production', 'goals', 'hr', 'reports'],
     'Supervisor': ['dashboard', 'projects', 'production', 'goals', 'hr', 'reports', 'settings'],
     'SUPERVISOR': ['dashboard', 'projects', 'production', 'goals', 'hr', 'reports', 'settings'],
     'Financeiro': ['dashboard', 'finance', 'projects', 'reports', 'settings'],
@@ -230,6 +297,7 @@ export default function App() {
   const [isProductionModalOpen, setIsProductionModalOpen] = useState<{ open: boolean, type: 'AGENT' | 'DATA_ENTRY' }>({ open: false, type: 'AGENT' });
   const [isFinanceModalOpen, setIsFinanceModalOpen] = useState(false);
   const [isGoalModalOpen, setIsGoalModalOpen] = useState(false);
+  const [isProjectModalOpen, setIsProjectModalOpen] = useState(false);
   const [hrSearch, setHrSearch] = useState('');
 
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
@@ -271,39 +339,105 @@ export default function App() {
   };
 
   // --- Form Actions ---
-  const addEmployee = (emp: Omit<Employee, 'id'>) => {
-    const newEmp = { ...emp, id: Math.random().toString(36).substr(2, 9) };
-    setEmployees([...employees, newEmp]);
-    setIsEmployeeModalOpen(false);
-  };
-
-  const updateEmployee = (emp: Employee) => {
-    setEmployees(employees.map(e => e.id === emp.id ? emp : e));
-    setIsEmployeeModalOpen(false);
-    setEditingEmployee(null);
-  };
-
-  const deleteEmployee = (id: string) => {
-    if (window.confirm('Tem certeza que deseja remover este colaborador?')) {
-      setEmployees(employees.filter(e => e.id !== id));
+  const addEmployee = async (emp: Omit<Employee, 'id'>) => {
+    try {
+      const newEmp = await dataService.createEmployee(emp);
+      setEmployees([...employees, newEmp]);
+      setIsEmployeeModalOpen(false);
+    } catch (error) {
+      console.error('Error adding employee:', error);
+      alert('Erro ao adicionar colaborador.');
     }
   };
 
-  const addProduction = (prod: Omit<DailyProduction, 'id'>) => {
-    const newProd = { ...prod, id: Math.random().toString(36).substr(2, 9) };
-    setProduction([...production, newProd]);
-    setIsProductionModalOpen({ open: false, type: 'AGENT' });
+  const updateEmployee = async (emp: Employee) => {
+    try {
+      const updatedEmp = await dataService.updateEmployee(emp);
+      setEmployees(employees.map(e => e.id === updatedEmp.id ? updatedEmp : e));
+      setIsEmployeeModalOpen(false);
+      setEditingEmployee(null);
+    } catch (error) {
+      console.error('Error updating employee:', error);
+      alert('Erro ao atualizar colaborador.');
+    }
   };
 
-  const addFinance = (record: Omit<FinanceRecord, 'id'>) => {
-    const newRecord = { ...record, id: Math.random().toString(36).substr(2, 9) };
-    setFinance([...finance, newRecord]);
-    setIsFinanceModalOpen(false);
+  const deleteEmployee = async (id: string) => {
+    if (window.confirm('Tem certeza que deseja remover este colaborador?')) {
+      try {
+        await dataService.deleteEmployee(id);
+        setEmployees(employees.filter(e => e.id !== id));
+      } catch (error) {
+        console.error('Error deleting employee:', error);
+        alert('Erro ao excluir colaborador.');
+      }
+    }
   };
 
-  const updateGoal = (goal: Goal) => {
-    setGoals(goals.map(g => g.id === goal.id ? goal : g));
-    setIsGoalModalOpen(false);
+  const addProduction = async (prod: Omit<DailyProduction, 'id'>) => {
+    try {
+      const newProd = await dataService.createProduction(prod);
+      setProduction([...production, newProd]);
+      setIsProductionModalOpen({ open: false, type: 'AGENT' });
+    } catch (error) {
+      console.error('Error adding production:', error);
+      alert('Erro ao adicionar produção.');
+    }
+  };
+
+  const addFinance = async (record: Omit<FinanceRecord, 'id'>) => {
+    try {
+      const newRecord = await dataService.createFinanceRecord(record);
+      setFinance([...finance, newRecord]);
+      setIsFinanceModalOpen(false);
+    } catch (error) {
+      console.error('Error adding finance record:', error);
+      alert('Erro ao adicionar registro financeiro.');
+    }
+  };
+
+  const addProject = async (proj: Omit<Project, 'id'>) => {
+    try {
+      const newProj = await dataService.createProject(proj);
+      setProjects([...projects, newProj]);
+      setIsProjectModalOpen(false);
+    } catch (error) {
+      console.error('Error adding project:', error);
+      alert('Erro ao adicionar projeto.');
+    }
+  };
+
+  const updateProject = async (proj: Project) => {
+    try {
+      const updatedProj = await dataService.updateProject(proj);
+      setProjects(projects.map(p => p.id === updatedProj.id ? updatedProj : p));
+    } catch (error) {
+      console.error('Error updating project:', error);
+      alert('Erro ao atualizar projeto.');
+    }
+  };
+
+  const deleteProject = async (id: string) => {
+    if (window.confirm('Tem certeza que deseja excluir este projeto?')) {
+      try {
+        await dataService.deleteProject(id);
+        setProjects(projects.filter(p => p.id !== id));
+      } catch (error) {
+        console.error('Error deleting project:', error);
+        alert('Erro ao excluir projeto.');
+      }
+    }
+  };
+
+  const updateGoal = async (goal: Goal) => {
+    try {
+      const updatedGoal = await dataService.updateGoal(goal);
+      setGoals(goals.map(g => g.id === updatedGoal.id ? updatedGoal : g));
+      setIsGoalModalOpen(false);
+    } catch (error) {
+      console.error('Error updating goal:', error);
+      alert('Erro ao atualizar meta.');
+    }
   };
 
   // --- Calculations ---
@@ -423,8 +557,8 @@ export default function App() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <Card title="Produção Diária" subtitle="Volume de entrevistas vs processamento" className="lg:col-span-2">
-          <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-[320px] min-h-[320px] w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={filteredProduction.slice(-7)}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                 <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 600 }} />
@@ -448,9 +582,9 @@ export default function App() {
         </Card>
 
         <Card title="Status de Projetos" subtitle="Distribuição de projetos">
-          <div className="h-80 flex flex-col items-center justify-center">
+          <div className="h-[320px] min-h-[320px] flex flex-col items-center justify-center">
             <div className="relative w-full h-full">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                 <PieChart>
                   <Pie
                     data={[
@@ -637,8 +771,8 @@ export default function App() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <Card title="Tendência de Produção" subtitle="Evolução semanal de entrevistas">
-          <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-[320px] min-h-[320px] w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={production.slice(-14)}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#f1f5f9'} />
                 <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11, fontWeight: 600 }} />
@@ -661,8 +795,8 @@ export default function App() {
         </Card>
 
         <Card title="Eficiência por Departamento" subtitle="Processamento vs Coleta">
-          <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-[320px] min-h-[320px] w-full">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <PieChart>
                 <Pie
                   data={[
@@ -813,16 +947,22 @@ export default function App() {
   };
 
   const PermissionsView = () => {
-    const togglePermission = (role: string, areaId: string) => {
+    const togglePermission = async (role: string, areaId: string) => {
       const currentPermissions = rolePermissions[role] || [];
       const newPermissions = currentPermissions.includes(areaId)
         ? currentPermissions.filter(id => id !== areaId)
         : [...currentPermissions, areaId];
       
-      setRolePermissions({
-        ...rolePermissions,
-        [role]: newPermissions
-      });
+      try {
+        await dataService.updatePermissions(role, newPermissions);
+        setRolePermissions({
+          ...rolePermissions,
+          [role]: newPermissions
+        });
+      } catch (error) {
+        console.error('Error updating permissions:', error);
+        alert('Erro ao atualizar permissões no Supabase.');
+      }
     };
 
     return (
@@ -904,13 +1044,14 @@ export default function App() {
                     <th className="px-4 py-3">Data</th>
                     <th className="px-4 py-3">Funcionário</th>
                     <th className="px-4 py-3">Tipo</th>
-                    <th className="px-4 py-3 text-right">Qtd</th>
+                    <th className="px-4 py-3 text-right">Primário</th>
+                    <th className="px-4 py-3 text-right">Secundário</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {production.map(prod => {
+                  {production.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(prod => {
                     const emp = employees.find(e => e.id === prod.employeeId);
-                    const isAgent = !!prod.interviewsDone;
+                    const isAgent = !!(prod.interviewsDone || prod.namesCollected);
                     return (
                       <tr key={prod.id} className="hover:bg-slate-50 transition-colors">
                         <td className="px-4 py-4 text-sm text-slate-500">{prod.date}</td>
@@ -924,7 +1065,16 @@ export default function App() {
                           </span>
                         </td>
                         <td className="px-4 py-4 text-sm font-bold text-right text-slate-700">
-                          {isAgent ? prod.interviewsDone : prod.interviewsProcessed}
+                          <div className="flex flex-col items-end">
+                            <span>{isAgent ? prod.interviewsDone : prod.interviewsProcessed}</span>
+                            <span className="text-[10px] text-slate-400 font-normal">{isAgent ? 'Entrevistas' : 'Processadas'}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 text-sm font-bold text-right text-slate-700">
+                          <div className="flex flex-col items-end">
+                            <span>{isAgent ? prod.namesCollected : prod.namesInserted}</span>
+                            <span className="text-[10px] text-slate-400 font-normal">{isAgent ? 'Nomes' : 'Inseridos'}</span>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1015,7 +1165,9 @@ export default function App() {
               </button>
             </div>
           </div>
-          <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100">
+          <button 
+            onClick={() => setIsProjectModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100">
             <Plus size={18} />
             Novo Projeto
           </button>
@@ -1042,9 +1194,17 @@ export default function App() {
                     )}>
                       {project.status.replace('_', ' ')}
                     </div>
-                    <button className="text-slate-400 hover:text-slate-600">
-                      <Settings size={16} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => deleteProject(project.id)}
+                        className="text-slate-400 hover:text-rose-500 transition-colors"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      <button className="text-slate-400 hover:text-slate-600">
+                        <Settings size={16} />
+                      </button>
+                    </div>
                   </div>
                   <h3 className="font-bold text-slate-800 mb-1">{project.name}</h3>
                   <p className="text-xs text-slate-400 mb-4">Prazo: {project.deadline}</p>
@@ -1061,7 +1221,7 @@ export default function App() {
                       value={project.progress}
                       onChange={(e) => {
                         const val = parseInt(e.target.value);
-                        setProjects(projects.map(p => p.id === project.id ? { ...p, progress: val, status: val === 100 ? 'COMPLETED' : p.status } : p));
+                        updateProject({ ...project, progress: val, status: val === 100 ? 'COMPLETED' : project.status });
                       }}
                       className="w-full h-1.5 bg-slate-100 rounded-full appearance-none cursor-pointer accent-blue-600"
                     />
@@ -1113,6 +1273,15 @@ export default function App() {
       </div>
     );
   };
+
+  const handleLogout = () => {
+    authService.logout();
+    setSessionUser(null);
+  };
+
+  if (!sessionUser) {
+    return <Login onLogin={setSessionUser} />;
+  }
 
   return (
     <div className={cn("flex h-screen bg-[#F5F5F7] dark:bg-slate-950 overflow-hidden transition-colors duration-300", theme === 'dark' && "dark")}>
@@ -1179,34 +1348,17 @@ export default function App() {
               <span className="text-xs font-bold text-slate-700 dark:text-slate-300">MT {stats.balance.toLocaleString()}</span>
             </div>
 
-            <div className="relative group">
-              <button className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all">
-                <Users size={14} className="text-slate-400" />
-                <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase">{currentUser.role}</span>
-              </button>
-              <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 p-2">
-                <p className="text-[10px] font-bold text-slate-400 uppercase px-3 py-2">Trocar Perfil (Demo)</p>
-                {employees.slice(0, 5).map(emp => (
-                  <button 
-                    key={emp.id}
-                    onClick={() => {
-                      setCurrentUser(emp);
-                      setActiveTab('dashboard');
-                    }}
-                    className={cn(
-                      "w-full text-left px-3 py-2 rounded-xl text-xs font-medium transition-colors",
-                      currentUser.id === emp.id ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400" : "text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
-                    )}
-                  >
-                    {emp.name} ({emp.role})
-                  </button>
-                ))}
-              </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-100 dark:border-slate-700">
+              <Users size={14} className="text-slate-400" />
+              <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 uppercase">{currentUser.role}</span>
             </div>
             
-            <button className="p-2 text-slate-400 hover:bg-slate-50 rounded-xl transition-colors relative">
-              <Bell size={20} />
-              <div className="absolute top-2 right-2 w-2 h-2 bg-yango-red rounded-full border-2 border-white" />
+            <button 
+              onClick={handleLogout}
+              className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-all"
+              title="Sair do Sistema"
+            >
+              <LogOut size={20} />
             </button>
             
             <div className="h-8 w-px bg-slate-100 mx-1" />
@@ -1224,7 +1376,15 @@ export default function App() {
         </header>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-8 relative">
+          {isLoading && (
+            <div className="absolute inset-0 bg-white/50 backdrop-blur-[1px] z-50 flex items-center justify-center">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 h-8 border-4 border-blue-600/20 border-t-blue-600 rounded-full animate-spin" />
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Sincronizando dados locais...</p>
+              </div>
+            </div>
+          )}
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -1367,19 +1527,23 @@ export default function App() {
                               placeholder="Novo cargo..."
                               value={newRoleName}
                               onChange={(e) => setNewRoleName(e.target.value)}
-                              onKeyDown={(e) => {
+                              onKeyDown={async (e) => {
                                 if (e.key === 'Enter' && newRoleName.trim()) {
-                                  setAvailableRoles([...availableRoles, newRoleName.trim()]);
+                                  const newList = [...availableRoles, newRoleName.trim()];
+                                  setAvailableRoles(newList);
                                   setNewRoleName('');
+                                  await dataService.updateConfig('roles', newList).catch(console.error);
                                 }
                               }}
                               className="flex-1 px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-slate-900/5 outline-none transition-all"
                             />
                             <button 
-                              onClick={() => {
+                              onClick={async () => {
                                 if (newRoleName.trim()) {
-                                  setAvailableRoles([...availableRoles, newRoleName.trim()]);
+                                  const newList = [...availableRoles, newRoleName.trim()];
+                                  setAvailableRoles(newList);
                                   setNewRoleName('');
+                                  await dataService.updateConfig('roles', newList).catch(console.error);
                                 }
                               }}
                               disabled={!newRoleName.trim()}
@@ -1398,12 +1562,13 @@ export default function App() {
                                     autoFocus
                                     className="text-sm font-bold text-slate-700 bg-transparent outline-none w-24"
                                     defaultValue={role}
-                                    onBlur={(e) => {
+                                    onBlur={async (e) => {
                                       const newVal = e.target.value.trim();
                                       if (newVal && newVal !== role) {
                                         const newRoles = [...availableRoles];
                                         newRoles[index] = newVal;
                                         setAvailableRoles(newRoles);
+                                        await dataService.updateConfig('roles', newRoles).catch(console.error);
                                       }
                                       setEditingRoleIndex(null);
                                     }}
@@ -1423,7 +1588,11 @@ export default function App() {
                                         <Edit2 size={12} />
                                       </button>
                                       <button 
-                                        onClick={() => setAvailableRoles(availableRoles.filter((_, i) => i !== index))}
+                                        onClick={async () => {
+                                          const newList = availableRoles.filter((_, i) => i !== index);
+                                          setAvailableRoles(newList);
+                                          await dataService.updateConfig('roles', newList).catch(console.error);
+                                        }}
                                         className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
                                       >
                                         <X size={12} />
@@ -1451,19 +1620,23 @@ export default function App() {
                               placeholder="Novo departamento..."
                               value={newDeptName}
                               onChange={(e) => setNewDeptName(e.target.value)}
-                              onKeyDown={(e) => {
+                              onKeyDown={async (e) => {
                                 if (e.key === 'Enter' && newDeptName.trim()) {
-                                  setAvailableDepartments([...availableDepartments, newDeptName.trim()]);
+                                  const newList = [...availableDepartments, newDeptName.trim()];
+                                  setAvailableDepartments(newList);
                                   setNewDeptName('');
+                                  await dataService.updateConfig('departments', newList).catch(console.error);
                                 }
                               }}
                               className="flex-1 px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-slate-900/5 outline-none transition-all"
                             />
                             <button 
-                              onClick={() => {
+                              onClick={async () => {
                                 if (newDeptName.trim()) {
-                                  setAvailableDepartments([...availableDepartments, newDeptName.trim()]);
+                                  const newList = [...availableDepartments, newDeptName.trim()];
+                                  setAvailableDepartments(newList);
                                   setNewDeptName('');
+                                  await dataService.updateConfig('departments', newList).catch(console.error);
                                 }
                               }}
                               disabled={!newDeptName.trim()}
@@ -1482,12 +1655,13 @@ export default function App() {
                                     autoFocus
                                     className="text-sm font-bold text-slate-700 bg-transparent outline-none w-24"
                                     defaultValue={dept}
-                                    onBlur={(e) => {
+                                    onBlur={async (e) => {
                                       const newVal = e.target.value.trim();
                                       if (newVal && newVal !== dept) {
                                         const newDepts = [...availableDepartments];
                                         newDepts[index] = newVal;
                                         setAvailableDepartments(newDepts);
+                                        await dataService.updateConfig('departments', newDepts).catch(console.error);
                                       }
                                       setEditingDeptIndex(null);
                                     }}
@@ -1507,7 +1681,11 @@ export default function App() {
                                         <Edit2 size={12} />
                                       </button>
                                       <button 
-                                        onClick={() => setAvailableDepartments(availableDepartments.filter((_, i) => i !== index))}
+                                        onClick={async () => {
+                                          const newList = availableDepartments.filter((_, i) => i !== index);
+                                          setAvailableDepartments(newList);
+                                          await dataService.updateConfig('departments', newList).catch(console.error);
+                                        }}
                                         className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
                                       >
                                         <X size={12} />
@@ -1555,6 +1733,8 @@ export default function App() {
               role: formData.get('role') as Role,
               department: formData.get('department') as string,
               contact: formData.get('contact') as string,
+              salary: parseFloat(formData.get('salary') as string) || 0,
+              address: formData.get('address') as string,
               joinDate: editingEmployee?.joinDate || new Date().toISOString().split('T')[0],
               status: editingEmployee?.status || 'ACTIVE'
             };
@@ -1610,6 +1790,26 @@ export default function App() {
                 className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" 
               />
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Salário Base (MT)</label>
+                <input 
+                  name="salary" 
+                  type="number" 
+                  step="0.01"
+                  defaultValue={editingEmployee?.salary}
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" 
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Endereço/Localização</label>
+                <input 
+                  name="address" 
+                  defaultValue={editingEmployee?.address}
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" 
+                />
+              </div>
+            </div>
             <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold text-sm hover:bg-slate-800 transition-colors">
               {editingEmployee ? "Salvar Alterações" : "Cadastrar Funcionário"}
             </button>
@@ -1629,26 +1829,38 @@ export default function App() {
             const names = parseInt(formData.get('names') as string) || 0;
             
             addProduction({
-              date: new Date().toISOString().split('T')[0],
+              date: (formData.get('date') as string) || new Date().toISOString().split('T')[0],
               employeeId: empId,
               ...(isProductionModalOpen.type === 'AGENT' 
                 ? { interviewsDone: val, namesCollected: names } 
                 : { interviewsProcessed: val, namesInserted: names })
             });
           }} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Funcionário</label>
-              <select name="employeeId" className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm">
-                {employees.filter(e => {
-                  if (isProductionModalOpen.type === 'AGENT') {
-                    return e.role === 'AGENT' || e.role === 'Agente de Campo';
-                  } else {
-                    return e.role === 'DATA_ENTRY' || e.role === 'Entrada de Dados';
-                  }
-                }).map(e => (
-                  <option key={e.id} value={e.id}>{e.name}</option>
-                ))}
-              </select>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Data</label>
+                <input 
+                  name="date" 
+                  type="date" 
+                  defaultValue={new Date().toISOString().split('T')[0]}
+                  required 
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" 
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Funcionário</label>
+                <select name="employeeId" className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm">
+                  {employees.filter(e => {
+                    if (isProductionModalOpen.type === 'AGENT') {
+                      return e.role === 'AGENT' || e.role === 'Agente de Campo';
+                    } else {
+                      return e.role === 'DATA_ENTRY' || e.role === 'Entrada de Dados';
+                    }
+                  }).map(e => (
+                    <option key={e.id} value={e.id}>{e.name}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -1679,9 +1891,19 @@ export default function App() {
               category: formData.get('category') as string,
               amount: parseFloat(formData.get('amount') as string) || 0,
               description: formData.get('description') as string,
-              date: new Date().toISOString().split('T')[0]
+              date: (formData.get('date') as string) || new Date().toISOString().split('T')[0]
             });
           }} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Data</label>
+              <input 
+                name="date" 
+                type="date" 
+                defaultValue={new Date().toISOString().split('T')[0]}
+                required 
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" 
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Tipo</label>
@@ -1733,6 +1955,40 @@ export default function App() {
                 <CreditCard size={18} />
               )}
               {isProcessingPayment ? 'Processando...' : 'Pagar com Stripe'}
+            </button>
+          </form>
+        </Modal>
+
+        <Modal isOpen={isProjectModalOpen} onClose={() => setIsProjectModalOpen(false)} title="Novo Projeto">
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const formData = new FormData(e.currentTarget);
+            addProject({
+              name: formData.get('name') as string,
+              managerId: formData.get('managerId') as string,
+              deadline: formData.get('deadline') as string,
+              status: 'IN_PROGRESS',
+              progress: 0
+            });
+          }} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Nome do Projeto</label>
+              <input name="name" required className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Gerente Responsável</label>
+              <select name="managerId" className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm">
+                {employees.filter(e => e.role === 'ADMIN' || e.role === 'Administrador' || e.role === 'Gestor de Projeto').map(e => (
+                  <option key={e.id} value={e.id}>{e.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Prazo Final</label>
+              <input name="deadline" type="date" required className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm" />
+            </div>
+            <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors">
+              Criar Projeto
             </button>
           </form>
         </Modal>

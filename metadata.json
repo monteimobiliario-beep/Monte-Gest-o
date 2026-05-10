@@ -1,5 +1,6 @@
 {
-  "name": "GestãoPro ERP",
+  "name": "Chaisa Gestão",
   "description": "Sistema de gestão empresarial focado em produtividade operacional, finanças, RH e metas.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": []
 }

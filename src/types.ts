@@ -1,3 +1,11 @@
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  avatar?: string;
+}
+
 export type Role = string;
 
 export interface Employee {
@@ -8,6 +16,8 @@ export interface Employee {
   joinDate: string;
   contact: string;
   status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+  salary?: number;
+  address?: string;
 }
 
 export interface FinanceRecord {
